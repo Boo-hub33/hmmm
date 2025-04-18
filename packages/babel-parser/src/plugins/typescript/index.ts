@@ -22,7 +22,7 @@ import type { ExpressionErrors } from "../../parser/util.ts";
 import type { ParseStatementFlag } from "../../parser/statement.ts";
 import { ParamKind } from "../../util/production-parameter.ts";
 import { Errors, ParseErrorEnum } from "../../parse-error.ts";
-import { cloneIdentifier, type Undone } from "../../parser/node.ts";
+import type { Undone } from "../../parser/node.ts";
 import type { Pattern } from "../../types.ts";
 import type { ClassWithMixin, IJSXParserMixin } from "../jsx/index.ts";
 import { ParseBindingListFlags } from "../../parser/lval.ts";
@@ -595,9 +595,8 @@ export default (superClass: ClassWithMixin<typeof Parser, IJSXParserMixin>) =>
           node.argument = this.parseStringLiteral(this.state.value);
         }
       }
-      if (this.eat(tt.comma) && !this.match(tt.parenR)) {
-        node.options = super.parseMaybeAssignAllowIn();
-        this.eat(tt.comma);
+      if (this.eat(tt.comma)) {
+        node.options = this.tsParseImportTypeOptions();
       } else {
         node.options = null;
       }
@@ -619,6 +618,43 @@ export default (superClass: ClassWithMixin<typeof Parser, IJSXParserMixin>) =>
         }
       }
       return this.finishNode(node, "TSImportType");
+    }
+
+    tsParseImportTypeOptions(): N.ObjectExpression {
+      const node = this.startNode<N.ObjectExpression>();
+      this.expect(tt.braceL);
+      const withProperty = this.startNode<N.ObjectProperty>();
+      if (this.isContextual(tt._with)) {
+        withProperty.method = false;
+        withProperty.key = this.parseIdentifier(true);
+        withProperty.computed = false;
+        withProperty.shorthand = false;
+      } else {
+        this.unexpected(null, tt._with);
+      }
+      this.expect(tt.colon);
+      withProperty.value = this.tsParseImportTypeWithPropertyValue();
+      node.properties = [this.finishObjectProperty(withProperty)];
+      this.expect(tt.braceR);
+      return this.finishNode(node, "ObjectExpression");
+    }
+
+    tsParseImportTypeWithPropertyValue(): N.ObjectExpression {
+      const node = this.startNode<N.ObjectExpression>();
+      const properties = [];
+      this.expect(tt.braceL);
+      while (!this.match(tt.braceR)) {
+        const type = this.state.type;
+        if (tokenIsIdentifier(type) || type === tt.string) {
+          properties.push(super.parsePropertyDefinition(null));
+        } else {
+          this.unexpected();
+        }
+        this.eat(tt.comma);
+      }
+      node.properties = properties;
+      this.next(); // eat }
+      return this.finishNode(node, "ObjectExpression");
     }
 
     tsParseEntityName(flags: tsParseEntityNameFlags): N.TsEntityName {
@@ -896,17 +932,16 @@ export default (superClass: ClassWithMixin<typeof Parser, IJSXParserMixin>) =>
     }
 
     tsParsePropertyOrMethodSignature(
-      node: N.TsPropertySignature | N.TsMethodSignature,
+      node: Undone<N.TsPropertySignature | N.TsMethodSignature>,
       readonly: boolean,
     ): N.TsPropertySignature | N.TsMethodSignature {
       if (this.eat(tt.question)) node.optional = true;
-      const nodeAny: any = node;
 
       if (this.match(tt.parenL) || this.match(tt.lt)) {
         if (readonly) {
           this.raise(TSErrors.ReadonlyForMethodSignature, node);
         }
-        const method: N.TsMethodSignature = nodeAny;
+        const method = node as Undone<N.TsMethodSignature>;
         if (method.kind && this.match(tt.lt)) {
           this.raise(
             TSErrors.AccessorCannotHaveTypeParameters,
@@ -969,7 +1004,7 @@ export default (superClass: ClassWithMixin<typeof Parser, IJSXParserMixin>) =>
         }
         return this.finishNode(method, "TSMethodSignature");
       } else {
-        const property: N.TsPropertySignature = nodeAny;
+        const property = node as Undone<N.TsPropertySignature>;
         if (readonly) property.readonly = true;
         const type = this.tsTryParseTypeAnnotation();
         if (type) property.typeAnnotation = type;
@@ -1029,6 +1064,10 @@ export default (superClass: ClassWithMixin<typeof Parser, IJSXParserMixin>) =>
       ) {
         node.kind = node.key.name;
         super.parsePropertyName(node);
+        // Allow < here so that we can recover from get key<T> later
+        if (!this.match(tt.parenL) && !this.match(tt.lt)) {
+          this.unexpected(null, tt.parenL);
+        }
       }
       return this.tsParsePropertyOrMethodSignature(node, !!node.readonly);
     }
@@ -2753,16 +2792,23 @@ export default (superClass: ClassWithMixin<typeof Parser, IJSXParserMixin>) =>
         }
 
         if (result) {
-          if (
-            result.type === "TSInstantiationExpression" &&
-            (this.match(tt.dot) ||
+          if (result.type === "TSInstantiationExpression") {
+            if (
+              this.match(tt.dot) ||
               (this.match(tt.questionDot) &&
-                this.lookaheadCharCode() !== charCodes.leftParenthesis))
-          ) {
-            this.raise(
-              TSErrors.InvalidPropertyAccessAfterInstantiationExpression,
-              this.state.startLoc,
-            );
+                this.lookaheadCharCode() !== charCodes.leftParenthesis)
+            ) {
+              this.raise(
+                TSErrors.InvalidPropertyAccessAfterInstantiationExpression,
+                this.state.startLoc,
+              );
+            }
+            if (!this.match(tt.dot) && !this.match(tt.questionDot)) {
+              // If TSInstantiationExpression is not followed by . / ?.,
+              // it must be the end of a subscript chain. Note that `(` already forms
+              // call expression arguments
+              result.expression = super.stopParseSubscript(base, state);
+            }
           }
           return result;
         }
@@ -2980,7 +3026,10 @@ export default (superClass: ClassWithMixin<typeof Parser, IJSXParserMixin>) =>
           /* isExport */ true,
         );
         if (process.env.BABEL_8_BREAKING) {
+          (node as Undone<N.ExportNamedDeclaration>).attributes = [];
           (node as Undone<N.ExportNamedDeclaration>).declaration = declaration;
+          (node as Undone<N.ExportNamedDeclaration>).exportKind = "value";
+          (node as Undone<N.ExportNamedDeclaration>).source = null;
           (node as Undone<N.ExportNamedDeclaration>).specifiers = [];
           return this.finishNode(node, "ExportNamedDeclaration");
         } else {
@@ -3469,7 +3518,6 @@ export default (superClass: ClassWithMixin<typeof Parser, IJSXParserMixin>) =>
         this.raise(TSErrors.ConstructorHasTypeParameters, typeParameters);
       }
 
-      // @ts-expect-error declare does not exist in ClassMethod
       const { declare = false, kind } = method;
 
       if (declare && (kind === "get" || kind === "set")) {
@@ -3505,13 +3553,7 @@ export default (superClass: ClassWithMixin<typeof Parser, IJSXParserMixin>) =>
     ) {
       if (node.type === "TSDeclareMethod") return;
       // This happens when using the "estree" plugin.
-      if (
-        (node as N.Node).type === "MethodDefinition" &&
-        !Object.hasOwn(
-          (node as unknown as N.EstreeMethodDefinition).value,
-          "body",
-        )
-      ) {
+      if ((node as N.Node).type === "MethodDefinition" && node.body == null) {
         return;
       }
 
@@ -4186,7 +4228,7 @@ export default (superClass: ClassWithMixin<typeof Parser, IJSXParserMixin>) =>
         inClassScope,
       );
       // @ts-expect-error todo(flow->ts) property not defined for all types in union
-      if (method.abstract) {
+      if (method.abstract || method.type === "TSAbstractMethodDefinition") {
         const hasEstreePlugin = this.hasPlugin("estree");
         const methodFn = hasEstreePlugin
           ? // @ts-expect-error estree typings
@@ -4368,7 +4410,7 @@ export default (superClass: ClassWithMixin<typeof Parser, IJSXParserMixin>) =>
           : this.parseModuleExportName();
       }
       if (!node[rightOfAsKey]) {
-        node[rightOfAsKey] = cloneIdentifier(node[leftOfAsKey]);
+        node[rightOfAsKey] = this.cloneIdentifier(node[leftOfAsKey]);
       }
       if (isImport) {
         this.checkIdentifier(
@@ -4377,6 +4419,125 @@ export default (superClass: ClassWithMixin<typeof Parser, IJSXParserMixin>) =>
             ? BindingFlag.TYPE_TS_TYPE_IMPORT
             : BindingFlag.TYPE_TS_VALUE_IMPORT,
         );
+      }
+    }
+
+    /**
+     * This hook is defined in the ESTree plugin.
+     * The TS-ESLint always define optional AST properties, here we provide the
+     * default value for such properties immediately after `finishNode` was invoked.
+     *
+     * @param node The AST node finished by finishNode
+     * @returns
+     */
+    fillOptionalPropertiesForTSESLint(node: N.Node): void {
+      switch (node.type) {
+        case "ExpressionStatement":
+          node.directive ??= undefined;
+          return;
+        case "RestElement":
+          node.value = undefined;
+        /* fallthrough */
+        case "Identifier":
+        case "ArrayPattern":
+        case "AssignmentPattern":
+        case "ObjectPattern":
+          node.decorators ??= [];
+          node.optional ??= false;
+          node.typeAnnotation ??= undefined;
+          return;
+        case "TSParameterProperty":
+          node.accessibility ??= undefined;
+          node.decorators ??= [];
+          node.override ??= false;
+          node.readonly ??= false;
+          node.static ??= false;
+          return;
+        case "TSEmptyBodyFunctionExpression":
+          node.body = null;
+        /* fallthrough */
+        case "TSDeclareFunction":
+        case "FunctionDeclaration":
+        case "FunctionExpression":
+        case "ClassMethod":
+        case "ClassPrivateMethod":
+          node.declare ??= false;
+          node.returnType ??= undefined;
+          node.typeParameters ??= undefined;
+          return;
+        case "Property":
+          node.optional ??= false;
+          return;
+        case "TSMethodSignature":
+        case "TSPropertySignature":
+          node.optional ??= false;
+        /* fallthrough */
+        case "TSIndexSignature":
+          node.accessibility ??= undefined;
+          node.readonly ??= false;
+          node.static ??= false;
+          return;
+        case "TSAbstractPropertyDefinition":
+        case "PropertyDefinition":
+        case "TSAbstractAccessorProperty":
+        case "AccessorProperty":
+          node.declare ??= false;
+          node.definite ??= false;
+          node.readonly ??= false;
+          node.typeAnnotation ??= undefined;
+        /* fallthrough */
+        case "TSAbstractMethodDefinition":
+        case "MethodDefinition":
+          node.accessibility ??= undefined;
+          node.decorators ??= [];
+          node.override ??= false;
+          node.optional ??= false;
+          return;
+        case "ClassExpression":
+          node.id ??= null;
+        /* fallthrough */
+        case "ClassDeclaration":
+          node.abstract ??= false;
+          node.declare ??= false;
+          node.decorators ??= [];
+          node.implements ??= [];
+          node.superTypeArguments ??= undefined;
+          node.typeParameters ??= undefined;
+          return;
+        case "TSTypeAliasDeclaration":
+        case "VariableDeclaration":
+          node.declare ??= false;
+          return;
+        case "VariableDeclarator":
+          node.definite ??= false;
+          return;
+        case "TSEnumDeclaration":
+          node.const ??= false;
+          node.declare ??= false;
+          return;
+        case "TSEnumMember":
+          node.computed ??= false;
+          return;
+        case "TSImportType":
+          node.qualifier ??= null;
+          node.options ??= null;
+          if (process.env.BABEL_8_BREAKING) {
+            node.typeArguments ??= null;
+          }
+          return;
+        case "TSInterfaceDeclaration":
+          node.declare ??= false;
+          node.extends ??= [];
+          return;
+        case "TSModuleDeclaration":
+          node.declare ??= false;
+          node.global ??= node.kind === "global";
+          return;
+        case "TSTypeParameter":
+          node.const ??= false;
+          node.in ??= false;
+          node.out ??= false;
+          return;
       }
     }
   };

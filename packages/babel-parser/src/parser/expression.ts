@@ -61,7 +61,7 @@ import {
   type UnparenthesizedPipeBodyTypes,
 } from "../parse-error/pipeline-operator-errors.ts";
 import { setInnerComments } from "./comments.ts";
-import { cloneIdentifier, type Undone } from "./node.ts";
+import type { Undone } from "./node.ts";
 import type Parser from "./index.ts";
 
 import { OptionFlags, type SourceType } from "../options.ts";
@@ -774,8 +774,7 @@ export default abstract class ExpressionParser extends LValParser {
         this.raise(Errors.OptionalChainingNoNew, this.state.startLoc);
         if (this.lookaheadCharCode() === charCodes.leftParenthesis) {
           // stop at `?.` when parsing `new a?.()`
-          state.stop = true;
-          return base;
+          return this.stopParseSubscript(base, state);
         }
       }
       state.optionalChainMember = optional = true;
@@ -794,10 +793,18 @@ export default abstract class ExpressionParser extends LValParser {
       if (computed || optional || this.eat(tt.dot)) {
         return this.parseMember(base, startLoc, state, computed, optional);
       } else {
-        state.stop = true;
-        return base;
+        return this.stopParseSubscript(base, state);
       }
     }
+  }
+
+  stopParseSubscript(
+    this: Parser,
+    base: N.Expression,
+    state: N.ParseSubscriptState,
+  ) {
+    state.stop = true;
+    return base;
   }
 
   // base[?Yield, ?Await] [ Expression[+In, ?Yield, ?Await] ]
@@ -831,7 +838,7 @@ export default abstract class ExpressionParser extends LValParser {
     }
 
     if (state.optionalChainMember) {
-      (node as N.OptionalMemberExpression).optional = optional;
+      (node as Undone<N.OptionalMemberExpression>).optional = optional;
       return this.finishNode(node, "OptionalMemberExpression");
     } else {
       return this.finishNode(node, "MemberExpression");
@@ -887,8 +894,7 @@ export default abstract class ExpressionParser extends LValParser {
     }
 
     if (optionalChainMember) {
-      // @ts-expect-error when optionalChainMember is true, node must be an optional call
-      node.optional = optional;
+      (node as Undone<N.OptionalCallExpression>).optional = optional;
     }
 
     if (optional) {
@@ -1140,28 +1146,12 @@ export default abstract class ExpressionParser extends LValParser {
         return this.parseParenAndDistinguishExpression(canBeArrow);
       }
 
-      case tt.bracketBarL:
-      case tt.bracketHashL: {
-        return this.parseArrayLike(
-          this.state.type === tt.bracketBarL ? tt.bracketBarR : tt.bracketR,
-          /* canBePattern */ false,
-          /* isTuple */ true,
-        );
-      }
       case tt.bracketL: {
         return this.parseArrayLike(
           tt.bracketR,
           /* canBePattern */ true,
           /* isTuple */ false,
           refExpressionErrors,
-        );
-      }
-      case tt.braceBarL:
-      case tt.braceHashL: {
-        return this.parseObjectLike(
-          this.state.type === tt.braceBarL ? tt.braceBarR : tt.braceR,
-          /* isPattern */ false,
-          /* isRecord */ true,
         );
       }
       case tt.braceL: {
@@ -1263,8 +1253,22 @@ export default abstract class ExpressionParser extends LValParser {
       }
 
       default:
-        if (!process.env.BABEL_8_BREAKING && type === tt.decimal) {
-          return this.parseDecimalLiteral(this.state.value);
+        if (!process.env.BABEL_8_BREAKING) {
+          if (type === tt.decimal) {
+            return this.parseDecimalLiteral(this.state.value);
+          } else if (type === tt.bracketBarL || type === tt.bracketHashL) {
+            return this.parseArrayLike(
+              this.state.type === tt.bracketBarL ? tt.bracketBarR : tt.bracketR,
+              /* canBePattern */ false,
+              /* isTuple */ true,
+            );
+          } else if (type === tt.braceBarL || type === tt.braceHashL) {
+            return this.parseObjectLike(
+              this.state.type === tt.braceBarL ? tt.braceBarR : tt.braceR,
+              /* isPattern */ false,
+              /* isRecord */ true,
+            );
+          }
         }
 
         if (tokenIsIdentifier(type)) {
@@ -2284,7 +2288,7 @@ export default abstract class ExpressionParser extends LValParser {
         ? this.parseMaybeDefault(this.state.startLoc)
         : this.parseMaybeAssignAllowIn(refExpressionErrors);
 
-      return this.finishNode(prop, "ObjectProperty");
+      return this.finishObjectProperty(prop);
     }
 
     if (!prop.computed && prop.key.type === "Identifier") {
@@ -2297,7 +2301,7 @@ export default abstract class ExpressionParser extends LValParser {
       if (isPattern) {
         prop.value = this.parseMaybeDefault(
           startLoc,
-          cloneIdentifier(prop.key),
+          this.cloneIdentifier(prop.key),
         );
       } else if (this.match(tt.eq)) {
         const shorthandAssignLoc = this.state.startLoc;
@@ -2310,15 +2314,19 @@ export default abstract class ExpressionParser extends LValParser {
         }
         prop.value = this.parseMaybeDefault(
           startLoc,
-          cloneIdentifier(prop.key),
+          this.cloneIdentifier(prop.key),
         );
       } else {
-        prop.value = cloneIdentifier(prop.key);
+        prop.value = this.cloneIdentifier(prop.key);
       }
       prop.shorthand = true;
 
-      return this.finishNode(prop, "ObjectProperty");
+      return this.finishObjectProperty(prop);
     }
+  }
+
+  finishObjectProperty(node: Undone<N.ObjectProperty>) {
+    return this.finishNode(node, "ObjectProperty");
   }
 
   parseObjPropValue<T extends N.ObjectMember>(
