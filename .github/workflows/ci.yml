@@ -251,12 +251,21 @@ jobs:
           # Deduplicate dependencies, because duplicate copies of graceful-fs cause
           # problems with the "path" module: https://github.com/facebook/jest/issues/9656
           yarn dedupe
-      - name: Downgrade Jest and jest-light-runner for node == 12
+      - name: Downgrade Jest and jest-light-runner for node 12
         if: matrix.node-version == '12'
         run: |
           yarn up jest@28
           cd packages/babel-helper-transform-fixture-test-runner && yarn up jest-diff@28 && cd ../..
           yarn up jest-light-runner@0.3.0
+          # Deduplicate dependencies, because duplicate copies of graceful-fs cause
+          # problems with the "path" module: https://github.com/facebook/jest/issues/9656
+          yarn dedupe
+      - name: Downgrade Jest and jest-light-runner for node 14 and 16
+        if: matrix.node-version == '14' || matrix.node-version == '16'
+        run: |
+          yarn up jest@29
+          cd packages/babel-helper-transform-fixture-test-runner && yarn up jest-diff@28 && cd ../..
+          yarn up jest-light-runner@0.5.1
           # Deduplicate dependencies, because duplicate copies of graceful-fs cause
           # problems with the "path" module: https://github.com/facebook/jest/issues/9656
           yarn dedupe
@@ -815,7 +824,7 @@ jobs:
         shell: bash
 
   test262-babel8:
-    name: test262-babel8
+    name: test262 - Babel 8
     runs-on: ubuntu-latest
     if: github.repository == 'babel/babel'
     needs: [build-babel8]
@@ -839,7 +848,7 @@ jobs:
         with:
           repository: babel/babel-test262-runner
           path: babel-test262-runner
-          ref: cache
+          ref: main
       - name: Install test runner
         run: |
           cd babel-test262-runner
@@ -849,7 +858,7 @@ jobs:
         run: make bootstrap-test262
       - name: Download test262 results cache
         id: results-cache-restore
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           key: test262-babel8
           path: babel-test262-runner/cache.lmdb
