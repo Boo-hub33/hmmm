@@ -3,8 +3,12 @@
 
 
 
-# 4 valid programs produced a parsing error
+# 8 valid programs produced a parsing error
 
+built-ins/Temporal/PlainDate/compare/no-fractional-minutes-hours.js(strict mode)
+built-ins/Temporal/PlainDateTime/compare/no-fractional-minutes-hours.js(strict mode)
+built-ins/Temporal/PlainTime/compare/no-fractional-minutes-hours.js(strict mode)
+built-ins/Temporal/PlainYearMonth/compare/no-fractional-minutes-hours.js(strict mode)
 staging/explicit-resource-management/await-using-in-switch-case-block.js(default)
 staging/explicit-resource-management/await-using-in-switch-case-block.js(strict mode)
 staging/explicit-resource-management/call-dispose-methods.js(default)
